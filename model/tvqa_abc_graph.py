@@ -58,12 +58,19 @@ class ABC(nn.Module):
         # *_l is the length of each question / answer.  This is a tensor of shape [100,] of dtype integer > 0
 
         # e_* is an embedding vector: using GLoVE to turn token numbers into word vectors of shape [bs,seq_len,300]
-        e_q = self.embedding(q)
-        e_a0 = self.embedding(a0)
-        e_a1 = self.embedding(a1)
-        e_a2 = self.embedding(a2)
-        e_a3 = self.embedding(a3)
-        e_a4 = self.embedding(a4)
+        e_q = q
+        e_a0 = a0
+        e_a1 = a1
+        e_a2 = a2
+        e_a3 = a3
+        e_a4 = a4
+
+        # e_q = self.embedding(q)
+        # e_a0 = self.embedding(a0)
+        # e_a1 = self.embedding(a1)
+        # e_a2 = self.embedding(a2)
+        # e_a3 = self.embedding(a3)
+        # e_a4 = self.embedding(a4)
 
         # contextualized q/a versions from bi-lstm. same shape: [bs,seq_len,300]
         raw_out_q, _ = self.lstm_raw(e_q, q_l)
@@ -74,7 +81,7 @@ class ABC(nn.Module):
         raw_out_a4, _ = self.lstm_raw(e_a4, a4_l)
 
         if self.sub_flag:
-            e_sub = self.embedding(sub)
+            e_sub = sub
             raw_out_sub, _ = self.lstm_raw(e_sub, sub_l)
             sub_out = self.stream_processor(self.lstm_mature_sub, self.classifier_sub, raw_out_sub, sub_l,
                                             raw_out_q, q_l, raw_out_a0, a0_l, raw_out_a1, a1_l,
@@ -83,7 +90,7 @@ class ABC(nn.Module):
             sub_out = 0
 
         if self.vcpt_flag:
-            e_vcpt = self.embedding(vcpt)
+            e_vcpt = vcpt
             raw_out_vcpt, _ = self.lstm_raw(e_vcpt, vcpt_l)
             vcpt_out = self.stream_processor(self.lstm_mature_vcpt, self.classifier_vcpt, raw_out_vcpt, vcpt_l,
                                              raw_out_q, q_l, raw_out_a0, a0_l, raw_out_a1, a1_l,
@@ -93,7 +100,10 @@ class ABC(nn.Module):
 
         if self.vid_flag:
             e_vid = self.video_fc(vid)
-            raw_out_vid, _ = self.lstm_raw(e_vid, vid_l)
+            try:
+                raw_out_vid, _ = self.lstm_raw(e_vid, vid_l)
+            except:
+                hi=2
             vid_out = self.stream_processor(self.lstm_mature_vid, self.classifier_vid, raw_out_vid, vid_l,
                                             raw_out_q, q_l, raw_out_a0, a0_l, raw_out_a1, a1_l,
                                             raw_out_a2, a2_l, raw_out_a3, a3_l, raw_out_a4, a4_l)

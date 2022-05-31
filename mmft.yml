@@ -1,0 +1,18 @@
+name: mmft
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip:
+    - chardet==4.0.0
+    - easydict==1.9
+    - kiwisolver==1.4.2
+    - markupsafe==2.1.1
+    - matplotlib==3.5.2
+    - protobuf==3.20.1
+    - python-dateutil==2.8.2
+    - pytz==2022.1
+    - regex==2022.4.24
+    - six==1.16.0
+    - urllib3==1.26.9
+prefix: /work/awilf/anaconda3/envs/mmft

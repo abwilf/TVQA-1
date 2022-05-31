@@ -23,6 +23,7 @@ class BaseOptions(object):
         self.parser.add_argument("--max_es_cnt", type=int, default=3, help="number of epochs to early stop")
         self.parser.add_argument("--bsz", type=int, default=32, help="mini-batch size")
         self.parser.add_argument("--test_bsz", type=int, default=100, help="mini-batch size for testing")
+        self.parser.add_argument("--clip", type=float, default=1.0, help="Gradient clipping value")
         self.parser.add_argument("--device", type=int, default=0, help="gpu ordinal, -1 indicates cpu")
         self.parser.add_argument("--no_core_driver", action="store_true",
                                  help="hdf5 driver, default use `core` (load into RAM), if specified, use `None`")
@@ -40,8 +41,10 @@ class BaseOptions(object):
         self.parser.add_argument("--max_sub_l", type=int, default=300, help="max length for subtitle")
         self.parser.add_argument("--max_vcpt_l", type=int, default=300, help="max length for visual concepts")
         self.parser.add_argument("--max_vid_l", type=int, default=480, help="max length for video feature")
+        self.parser.add_argument("--max_q_l", type=int, default=50, help="max length for video feature")
         self.parser.add_argument("--vocab_size", type=int, default=0, help="vocabulary size")
         self.parser.add_argument("--no_normalize_v", action="store_true", help="do not normalize video featrue")
+        self.parser.add_argument("--num_workers", type=int, default=8)
 
         # path config
         self.parser.add_argument("--train_path", type=str, default="./data/tvqa_train_processed.json",
@@ -52,9 +55,9 @@ class BaseOptions(object):
                                  help="test set path")
         self.parser.add_argument("--glove_path", type=str, default="./data/glove.6B.300d.txt",
                                  help="GloVe pretrained vector path")
-        self.parser.add_argument("--vcpt_path", type=str, default="./data/det_visual_concepts_hq.pickle",
+        self.parser.add_argument("--vcpt_path", type=str, default="/work/awilf/tvqa/data/det_visual_concepts_hq.pickle",
                                  help="visual concepts feature path")
-        self.parser.add_argument("--vid_feat_path", type=str, default="./data/tvqa_imagenet_pool5.h5",
+        self.parser.add_argument("--vid_feat_path", type=str, default="/work/awilf/tvqa/data/tvqa_imagenet_pool5_hq.h5",
                                  help="imagenet feature path")
         self.parser.add_argument("--vid_feat_size", type=int, default=2048,
                                  help="visual feature dimension")
@@ -86,6 +89,7 @@ class BaseOptions(object):
             self.initialize()
         opt = self.parser.parse_args()
         results_dir = opt.results_dir_base + time.strftime("_%Y_%m_%d_%H_%M_%S")
+        print('\n##\nResults dir is: ', results_dir, '\n##')
 
         if isinstance(self, TestOptions):
             options = load_json(os.path.join("results", opt.model_dir, "opt.json"))
