@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 # from torch.utils.data import DataLoader
-# from model.HeteroDataLoader import DataLoader
-from torch_geometric.loader import DataLoader
+from model.HeteroDataLoader import DataLoader
+# from torch_geometric.loader import DataLoader
 
 from tqdm import tqdm
 # from tensorboardX import SummaryWriter
@@ -19,7 +19,9 @@ import itertools
 
 from config import BaseOptions
 
-def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, train_loader):
+torch.cuda.set_device(0)
+
+def train(opt, dset, model, criterion, main_optimizer, graph_optimizer, epoch, previous_best_acc, train_loader, scheduler):
     dset.set_mode("train")
     model.train()
 
@@ -29,24 +31,33 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, trai
     torch.set_grad_enabled(True)
     
     max_pad = {
-        "q": opt.max_q_l, "a0": opt.max_q_l, "a1": opt.max_q_l, "a2": opt.max_q_l, "a3": opt.max_q_l, "a4": opt.max_q_l,
-        "sub": opt.max_sub_l,
-        "vcpt": opt.max_vcpt_l,
-        "vid": opt.max_vid_l,
+        "q": gc['max_q_l'], "a0": gc['max_q_l'], "a1": gc['max_q_l'], "a2": gc['max_q_l'], "a3": gc['max_q_l'], "a4": gc['max_q_l'],
+        "sub": gc['max_sub_l'],
+        "vcpt": gc['max_vcpt_l'],
+        "vid": gc['max_vid_l'],
     }
+
+    # results = {
+    #     'lr': [gc['lr']],
+    #     'graph_lr': [gc['graph_lr']],
+    #     'acc': np.arange(10),
+    #     'loss': np.random.random(10),
+    # }
+    # return results
     
     for batch_idx, (x,targets) in tqdm(enumerate(train_loader), total=len(train_loader)):
-        # model_inputs, targets, _ = preprocess_inputs(batch, opt.max_sub_l, opt.max_vcpt_l, opt.max_vid_l, device=opt.device)
+        # model_inputs, targets, _ = preprocess_inputs(batch, gc['max_sub_l'], gc['max_vcpt_l'], gc['max_vid_l'], device=gc['device'])
         
         # TODO: change model_inputs to be a graph here!
         # forward(self, q, q_l, a0, a0_l, a1, a1_l, a2, a2_l, a3, a3_l, a4, a4_l, sub, sub_l, vcpt, vcpt_l, vid, vid_l):
         
-        x = x.to('cuda')
-        targets = targets.to('cuda')
+        x = x.cuda()
+        targets = targets.cuda()
 
         mod_keys = ["q", "a0", "a1", "a2", "a3", "a4", "sub", "vcpt", 'vid']
+        graph_keys = ['sub', 'q', 'a0', 'a1', 'a2', 'a3', 'a4']
 
-        if not opt.vid_feat_flag:
+        if not gc['vid_feat_flag']:
             mod_keys = mod_keys[:-1]
 
         # reshape into format model expects: currently each is #nodes,dim; but because of padding this should be bs,max_seq_len,dim
@@ -54,41 +65,64 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, trai
         # for k in mod_keys:
             # x[k]['x'].reshape(bs,max_pad[k],-1) # if this fails, it's because one of the samples has an empty modality
         
-        model_inputs = [ ( x[k]['x'].reshape(bs,max_pad[k],-1), x[f'{k}_l'] ) for k in mod_keys]
+        # try:
+        model_inputs = []
+        for k in mod_keys:
+            if k in graph_keys:
+                model_inputs.append((None, None))
+            else:
+                model_inputs.append(( x[k]['x'].reshape(bs,max_pad[k],-1), x[f'{k}_l'] ))
         model_inputs = list(itertools.chain.from_iterable(model_inputs))
+    
+        # except:
+        #     hi=2
+        #     assert False
 
-        if not opt.vid_feat_flag:
+        if not gc['vid_feat_flag']:
             model_inputs = [*model_inputs, None, None]
+
+        # add full graph input
+        model_inputs.append(x)
             
-        outputs = model(*model_inputs)
+        try:
+            outputs = model(*model_inputs)
+        except:
+            print('Overflowed memory bounds')
+            torch.cuda.empty_cache()
+            continue
+        
         loss = criterion(outputs, targets)
-        optimizer.zero_grad()
+        main_optimizer.zero_grad()
+        graph_optimizer.zero_grad()
+
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), opt.clip)
-        optimizer.step()
-        # scheduler.step()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), gc['clip'])
+        
+        main_optimizer.step()
+        graph_optimizer.step()
+        scheduler.step()
 
         # measure accuracy and record loss
         train_loss.append(loss.item())
         pred_ids = outputs.data.max(1)[1]
         train_corrects += pred_ids.eq(targets.data).cpu().numpy().tolist()
-        if batch_idx % opt.log_freq == 0:
+        if batch_idx % gc['log_freq'] == 0 and batch_idx != 0:
             niter = epoch * len(train_loader) + batch_idx
 
             train_acc = sum(train_corrects) / float(len(train_corrects))
             train_loss = sum(train_loss) / float(len(train_corrects))
-            # opt.writer.add_scalar("Train/Acc", train_acc, niter)
-            # opt.writer.add_scalar("Train/Loss", train_loss, niter)
+            # gc['writer'].add_scalar("Train/Acc", train_acc, niter)
+            # gc['writer'].add_scalar("Train/Loss", train_loss, niter)
 
             # Test
-            valid_acc, valid_loss = validate(opt, dset, model, mode="valid")
-            # opt.writer.add_scalar("Valid/Loss", valid_loss, niter)
+            valid_acc, valid_loss = validate(gc, dset, model, mode="valid")
+            # gc['writer'].add_scalar("Valid/Loss", valid_loss, niter)
 
             valid_log_str = "%02d\t%.4f" % (batch_idx, valid_acc)
             valid_acc_log.append(valid_log_str)
             if valid_acc > previous_best_acc:
                 previous_best_acc = valid_acc
-                torch.save(model.state_dict(), os.path.join(opt.results_dir, "best_valid.pth"))
+                torch.save(model.state_dict(), os.path.join(gc['results_dir'], "best_valid.pth"))
             print(" Train Epoch %d loss %.4f acc %.4f Val loss %.4f acc %.4f"
                   % (epoch, train_loss, train_acc, valid_loss, valid_acc))
 
@@ -101,51 +135,66 @@ def train(opt, dset, model, criterion, optimizer, epoch, previous_best_acc, trai
 
         # torch.cuda.empty_cache()
 
-        if opt.debug:
+        if gc['debug']:
             break
 
     # additional log
-    with open(os.path.join(opt.results_dir, "valid_acc.log"), "a") as f:
+    with open(os.path.join(gc['results_dir'], "valid_acc.log"), "a") as f:
         f.write("\n".join(valid_acc_log) + "\n")
 
     return previous_best_acc
 
 
-def validate(opt, dset, model, mode="valid"):
+def validate(gc, dset, model, mode="valid"):
     dset.set_mode(mode)
     torch.set_grad_enabled(False)
     model.eval()
-    valid_loader = DataLoader(dset, batch_size=opt.test_bsz, shuffle=False, collate_fn=pad_collate)
+    valid_loader = DataLoader(dset, batch_size=gc['test_bsz'], shuffle=False, collate_fn=pad_collate)
 
     valid_qids = []
     valid_loss = []
     valid_corrects = []
 
     max_pad = {
-        "q": opt.max_q_l, "a0": opt.max_q_l, "a1": opt.max_q_l, "a2": opt.max_q_l, "a3": opt.max_q_l, "a4": opt.max_q_l,
-        "sub": opt.max_sub_l,
-        "vcpt": opt.max_vcpt_l,
-        "vid": opt.max_vid_l,
+        "q": gc['max_q_l'], "a0": gc['max_q_l'], "a1": gc['max_q_l'], "a2": gc['max_q_l'], "a3": gc['max_q_l'], "a4": gc['max_q_l'],
+        "sub": gc['max_sub_l'],
+        "vcpt": gc['max_vcpt_l'],
+        "vid": gc['max_vid_l'],
     }
     
     for _, (x,targets) in tqdm(enumerate(valid_loader), total=len(valid_loader)):
-        x = x.to('cuda')
-        targets = targets.to('cuda')
+        x = x.cuda()
+        targets = targets.cuda()
 
         mod_keys = ["q", "a0", "a1", "a2", "a3", "a4", "sub", "vcpt", 'vid']
-        if not opt.vid_feat_flag:
+        graph_keys = ['sub', 'q', 'a0', 'a1', 'a2', 'a3', 'a4']
+
+        if not gc['vid_feat_flag']:
             mod_keys = mod_keys[:-1]
 
         # reshape into format model expects: currently each is #nodes,dim; but because of padding this should be bs,max_seq_len,dim
         bs = len(x['q']['batch'].unique())
-        for k in mod_keys:
-            x[k]['x'].reshape(bs,max_pad[k],-1) # if this fails, it's because one of the samples has an empty modality
+        # for k in mod_keys:
+            # x[k]['x'].reshape(bs,max_pad[k],-1) # if this fails, it's because one of the samples has an empty modality
         
-        model_inputs = [ ( x[k]['x'].reshape(bs,max_pad[k],-1), x[f'{k}_l'] ) for k in mod_keys]
+        # try:
+        model_inputs = []
+        for k in mod_keys:
+            if k in graph_keys:
+                model_inputs.append((None, None))
+            else:
+                model_inputs.append(( x[k]['x'].reshape(bs,max_pad[k],-1), x[f'{k}_l'] ))
         model_inputs = list(itertools.chain.from_iterable(model_inputs))
+    
+        # except:
+        #     hi=2
+        #     assert False
 
-        if not opt.vid_feat_flag:
+        if not gc['vid_feat_flag']:
             model_inputs = [*model_inputs, None, None]
+
+        # add full graph input
+        model_inputs.append(x)
 
         outputs = model(*model_inputs)
         loss = criterion(outputs, targets)
@@ -156,7 +205,7 @@ def validate(opt, dset, model, mode="valid"):
         pred_ids = outputs.data.max(1)[1]
         valid_corrects += pred_ids.eq(targets.data).cpu().numpy().tolist()
 
-        if opt.debug:
+        if gc['debug']:
             break
 
     valid_acc = sum(valid_corrects) / float(len(valid_corrects))
@@ -164,54 +213,84 @@ def validate(opt, dset, model, mode="valid"):
     return valid_acc, valid_loss
 
 
-if __name__ == "__main__":
+def main(_gc):
     torch.manual_seed(2018)
-    opt = BaseOptions().parse()
-    # writer = SummaryWriter(opt.results_dir)
-    # opt.writer = writer
+    # opt = BaseOptions().parse()
+    global gc; gc = _gc
+    gc['input_streams'] = gc['input_streams'].split(' ')
+    # writer = SummaryWriter(gc['results_dir'])
+    # gc['writer'] = writer
 
-    dset = TVQADataset(opt)
-    opt.vocab_size = len(dset.word2idx)
-    model = ABC(opt)
-    if not opt.no_glove:
+    gc['normalize_v'] = not gc['no_normalize_v']
+    gc['device'] = torch.device("cuda:%d" % gc['device'] if gc['device'] >= 0 else "cpu")
+    gc['with_ts'] = not gc['no_ts']
+    gc['input_streams'] = [] if gc['input_streams'] is None else gc['input_streams']
+    gc['vid_feat_flag'] = True if "imagenet" in gc['input_streams'] else False
+    gc['h5driver'] = None if gc['no_core_driver'] else "core"
+    gc['results_dir'] = gc['out_dir']
+    
+    dset = TVQADataset(gc)
+    gc['vocab_size'] = len(dset.word2idx)
+    model = ABC(gc)
+    if not gc['no_glove']:
         model.load_embedding(dset.vocab_embedding)
 
-    model.to(opt.device)
+    model.cuda()
     cudnn.benchmark = True
-    criterion = nn.CrossEntropyLoss(size_average=False).to(opt.device)
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=opt.lr)
+    criterion = nn.CrossEntropyLoss(size_average=False).cuda()
 
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()),
-                                 lr=opt.lr, weight_decay=opt.wd)
+    graph_optimizer = torch.optim.AdamW(model.hetero_gnn.parameters(),lr=gc['graph_lr'])
+    
+    other_params = list(map(lambda elt: elt[1], filter(lambda np: ('hetero_gnn' not in np[0]) and np[1].requires_grad, model.named_parameters())))
+    main_optimizer = torch.optim.Adam(other_params, lr=gc['lr'], weight_decay=gc['wd'])
 
     dset.set_mode("train")
-    train_loader = DataLoader(dset, batch_size=opt.bsz, shuffle=False, num_workers=opt.num_workers)
+    train_loader = DataLoader(dset, batch_size=gc['bsz'], shuffle=False, num_workers=gc['num_workers'])
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(graph_optimizer, pct_start=0.05, anneal_strategy='linear', final_div_factor=10, max_lr=5e-4, total_steps=len(train_loader) * gc['n_epoch'] + 1)
 
     # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, pct_start=0.05, 
     #     anneal_strategy='linear', final_div_factor=10, max_lr=5e-4, 
-    #     total_steps=len(train_loader) * opt.n_epoch + 1)
+    #     total_steps=len(train_loader) * gc['n_epoch'] + 1)
+
+    # results = {
+    #     'lr': [gc['lr']],
+    #     'graph_lr': [gc['graph_lr']],
+    #     'acc': np.arange(10),
+    #     'loss': np.random.random(10),
+    # }
+    # return results
 
     best_acc = 0.
     early_stopping_cnt = 0
     early_stopping_flag = False
-    for epoch in range(opt.n_epoch):
+    for epoch in range(gc['n_epoch']):
         if not early_stopping_flag:
             # train for one epoch, valid per n batches, save the log and the best model
-            cur_acc = train(opt, dset, model, criterion, optimizer, epoch, best_acc, train_loader)
+            results = train(gc, dset, model, criterion, main_optimizer, graph_optimizer, epoch, best_acc, train_loader, scheduler)
+            cur_acc = results['acc']
 
             # remember best acc
             is_best = cur_acc > best_acc
             best_acc = max(cur_acc, best_acc)
             if not is_best:
                 early_stopping_cnt += 1
-                if early_stopping_cnt >= opt.max_es_cnt:
+                if early_stopping_cnt >= gc['max_es_cnt']:
                     early_stopping_flag = True
         else:
             print("early stop with valid acc %.4f" % best_acc)
-            # opt.writer.export_scalars_to_json(os.path.join(opt.results_dir, "all_scalars.json"))
-            # opt.writer.close()
+            # gc['writer'].export_scalars_to_json(os.path.join(gc['results_dir'], "all_scalars.json"))
+            # gc['writer'].close()
             break  # early stop break
 
-        if opt.debug:
+        if gc['debug']:
             break
+    
+    results = {
+        'accs': 
+    }
+    
 
+if __name__ == '__main__':
+    import sys; sys.path.append('/work/awilf/utils/'); from alex_utils import *
+    from defaults import defaults
+    main_wrapper(main, defaults, results=True)

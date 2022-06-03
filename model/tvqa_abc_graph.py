@@ -7,19 +7,107 @@ from .rnn import RNNEncoder, max_along_time
 from .bidaf import BidafAttn
 from .mlp import MLP
 
+import torch_geometric
+from torch_geometric.nn import GCNConv, SAGEConv, GATConv, GATv2Conv, Linear
+import torch_geometric
+from torch_scatter import scatter_mean
+import torch.nn.functional as F
+from torch_geometric.data import HeteroData
+from torch_geometric.data import Data
+import torch_geometric.transforms as T
+from common import *
+from torch_geometric.nn.conv import HeteroConv
+from sklearn.metrics import accuracy_score
+
+
+class Solograph_HeteroGNN(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        assert gc['hidden_dim'] % gc['num_heads'] == 0, 'Hidden channels must be divisible by number of heads'
+
+
+        self.convs = torch.nn.ModuleList()
+        if gc['batch_norm']:
+            self.batchnorms = torch.nn.ModuleList()
+        
+        for i in range(gc['num_convs']):
+            sub_a_conv = GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het'])
+            a_sub_conv = GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het'])
+            a_a_conv = GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het'])
+            q_a_conv = GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het'])
+            a_q_conv = GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het'])
+            
+            conv_dict = {
+                # self conns
+                ('q', 'q_q', 'q'): GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het']),
+                ('sub', 'sub_sub', 'sub'): GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het']),
+                ('a0', 'a_a', 'a0'): a_a_conv,
+                ('a1', 'a_a', 'a1'): a_a_conv,
+                ('a2', 'a_a', 'a2'): a_a_conv,
+                ('a3', 'a_a', 'a3'): a_a_conv,
+                ('a4', 'a_a', 'a4'): a_a_conv,
+
+                # sub
+                ('sub', 'sub_q', 'q'): GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het']),
+                ('q', 'q_sub', 'sub'): GATv2Conv(gc['hidden_dim'], gc['hidden_dim']//gc['num_heads'], heads=gc['num_heads'], dropout=gc['drop_het']),
+                
+                ('sub', 'sub_a', 'a0'): sub_a_conv,
+                ('sub', 'sub_a', 'a1'): sub_a_conv,
+                ('sub', 'sub_a', 'a2'): sub_a_conv,
+                ('sub', 'sub_a', 'a3'): sub_a_conv,
+                ('sub', 'sub_a', 'a4'): sub_a_conv,
+
+                ('a0', 'a_sub', 'sub'): a_sub_conv,
+                ('a1', 'a_sub', 'sub'): a_sub_conv,
+                ('a2', 'a_sub', 'sub'): a_sub_conv,
+                ('a3', 'a_sub', 'sub'): a_sub_conv,
+                ('a4', 'a_sub', 'sub'): a_sub_conv,
+
+                # qa
+                ('q', 'q_a', 'a0'): q_a_conv,
+                ('q', 'q_a', 'a1'): q_a_conv,
+                ('q', 'q_a', 'a2'): q_a_conv,
+                ('q', 'q_a', 'a3'): q_a_conv,
+                ('q', 'q_a', 'a4'): q_a_conv,
+
+                ('a0', 'a_q','q'): a_q_conv,
+                ('a1', 'a_q','q'): a_q_conv,
+                ('a2', 'a_q','q'): a_q_conv,
+                ('a3', 'a_q','q'): a_q_conv,
+                ('a4', 'a_q','q'): a_q_conv,
+            }
+
+            conv = HeteroConv(conv_dict, aggr='mean')
+
+            self.convs.append(conv)
+            if gc['batch_norm']:
+                bn = torch_geometric.nn.norm.BatchNorm(gc['hidden_dim'])
+                self.batchnorms.append(bn)
+
+    def forward(self, x_dict, edge_index_dict, batch_dict):
+        for i,conv in enumerate(self.convs):
+            x_dict = conv(x_dict, edge_index_dict)
+            x_dict = {key: x.relu() for key, x in x_dict.items()}
+            
+            if gc['batch_norm']:
+                x_dict = {k: self.batchnorms[i](v) for k,v in x_dict.items()}
+
+        return x_dict
 
 class ABC(nn.Module):
-    def __init__(self, opt):
+    def __init__(self, _gc):
         super(ABC, self).__init__()
-        self.vid_flag = "imagenet" in opt.input_streams
-        self.sub_flag = "sub" in opt.input_streams
-        self.vcpt_flag = "vcpt" in opt.input_streams
-        hidden_size_1 = opt.hsz1
-        hidden_size_2 = opt.hsz2
-        n_layers_cls = opt.n_layers_cls
-        vid_feat_size = opt.vid_feat_size
-        embedding_size = opt.embedding_size
-        vocab_size = opt.vocab_size
+        global gc; gc=_gc
+        self.vid_flag = "imagenet" in gc['input_streams']
+        self.sub_flag = "sub" in gc['input_streams']
+        self.vcpt_flag = "vcpt" in gc['input_streams']
+        hidden_size_1 = gc['hsz1']
+        hidden_size_2 = gc['hsz2']
+        n_layers_cls = gc['n_layers_cls']
+        vid_feat_size = gc['vid_feat_size']
+        embedding_size = gc['embedding_size']
+        vocab_size = gc['vocab_size']
 
         self.embedding = nn.Embedding(vocab_size, embedding_size)
         self.bidaf = BidafAttn(hidden_size_1 * 3, method="dot")  # no parameter for dot
@@ -48,11 +136,31 @@ class ABC(nn.Module):
                                                dropout_p=0, n_layers=1, rnn_type="lstm")
             self.classifier_vcpt = MLP(hidden_size_2*2, 1, 500, n_layers_cls)
 
+        # self.lin_dict = torch.nn.ModuleDict()
+        # self.lin_dict['sub'] = nn.Sequential(
+        #     nn.Linear(300, gc['hidden_dim']),
+        #     nn.Dropout(.1),
+        #     nn.ReLU(),
+        # )
+        # self.lin_dict['a'] = nn.Sequential(
+        #     nn.Linear(300, gc['hidden_dim']),
+        #     nn.Dropout(.1),
+        #     nn.ReLU(),
+        # )
+        # self.lin_dict['q'] = nn.Sequential(
+        #     nn.Linear(300, gc['hidden_dim']),
+        #     nn.Dropout(.1),
+        #     nn.ReLU(),
+        # )
+
+        self.hetero_gnn = Solograph_HeteroGNN()
+        self.pe = PositionalEncoding(gc['hidden_dim'])
+
     def load_embedding(self, pretrained_embedding):
         self.embedding.weight.data.copy_(torch.from_numpy(pretrained_embedding))
 
     def forward(self, q, q_l, a0, a0_l, a1, a1_l, a2, a2_l, a3, a3_l, a4, a4_l,
-                sub, sub_l, vcpt, vcpt_l, vid, vid_l):
+                sub, sub_l, vcpt, vcpt_l, vid, vid_l, batch):
         # NOTE: this is a late fusion model.  It processes each stream (e.g. video, visual concept region, subtitle) independently, then adds their predictions together.
         # q, a are token of shape [bs, seq_len] = [100, 25] where each elt is an integer (token number)
         # *_l is the length of each question / answer.  This is a tensor of shape [100,] of dtype integer > 0
@@ -73,19 +181,50 @@ class ABC(nn.Module):
         # e_a4 = self.embedding(a4)
 
         # contextualized q/a versions from bi-lstm. same shape: [bs,seq_len,300]
-        raw_out_q, _ = self.lstm_raw(e_q, q_l)
-        raw_out_a0, _ = self.lstm_raw(e_a0, a0_l)
-        raw_out_a1, _ = self.lstm_raw(e_a1, a1_l)
-        raw_out_a2, _ = self.lstm_raw(e_a2, a2_l)
-        raw_out_a3, _ = self.lstm_raw(e_a3, a3_l)
-        raw_out_a4, _ = self.lstm_raw(e_a4, a4_l)
+        # raw_out_q, _ = self.lstm_raw(e_q, q_l)
+        # raw_out_a0, _ = self.lstm_raw(e_a0, a0_l)
+        # raw_out_a1, _ = self.lstm_raw(e_a1, a1_l)
+        # raw_out_a2, _ = self.lstm_raw(e_a2, a2_l)
+        # raw_out_a3, _ = self.lstm_raw(e_a3, a3_l)
+        # raw_out_a4, _ = self.lstm_raw(e_a4, a4_l)
 
         if self.sub_flag:
-            e_sub = sub
-            raw_out_sub, _ = self.lstm_raw(e_sub, sub_l)
-            sub_out = self.stream_processor(self.lstm_mature_sub, self.classifier_sub, raw_out_sub, sub_l,
-                                            raw_out_q, q_l, raw_out_a0, a0_l, raw_out_a1, a1_l,
-                                            raw_out_a2, a2_l, raw_out_a3, a3_l, raw_out_a4, a4_l)
+            # run lin projection
+            # batch['sub']['x'] = self.lin_dict['sub'](batch['sub']['x'])
+            # batch['q']['x'] = self.lin_dict['q'](batch['q']['x'])
+            
+            # for a in ['a0', 'a1', 'a2', 'a3', 'a4']:
+            #     batch[a]['x'] = self.lin_dict['a'](batch[a]['x'])
+
+            # positional encoding
+            for k in ['sub', 'q', 'a0', 'a1', 'a2', 'a3', 'a4']:
+                counts = torch.diff(batch[k]['ptr'])
+                batch[k]['x'] = self.pe(batch[k]['x'], counts)
+
+            # run convs
+            x_dict = self.hetero_gnn(batch.x_dict, batch.edge_index_dict, None)
+
+            ## pooled rep
+            # run linear clf
+            # get all end of sentence tokens
+            qa_keys = ['q', 'a0', 'a1', 'a2', 'a3', 'a4']
+            clf_dict = {k: x_dict[k][batch[k]['ptr'][1:]-1] for k in qa_keys} # eos tokens
+
+            a_keys = ['a0', 'a1', 'a2', 'a3', 'a4']
+            mature_answers = torch.cat([torch.cat([clf_dict['q'], clf_dict[a]], -1)[:,None,:] for a in a_keys], 1)
+            
+            out = self.classifier_sub(mature_answers)  # (B, 5)
+            return out.squeeze()
+            
+            ## try it with original setup - hard b/c adding padding might screw things up in backward pass?
+            # sub_l = counts
+            # sub_out = self.stream_processor(self.lstm_mature_sub, self.classifier_sub, sub_out, sub_l,
+            #                                 raw_out_q, q_l, raw_out_a0, a0_l, raw_out_a1, a1_l,
+            #                                 raw_out_a2, a2_l, raw_out_a3, a3_l, raw_out_a4, a4_l)
+
+
+            #
+
         else:
             sub_out = 0
 
@@ -171,7 +310,7 @@ if __name__ == '__main__':
     opt = BaseOptions().parse()
 
     model = ABC(opt)
-    model.to(opt.device)
-    test_in = model.get_fake_inputs(device=opt.device)
+    model.to(gc['device'])
+    test_in = model.get_fake_inputs(device=gc['device'])
     test_out = model(*test_in)
     print(test_out.size())

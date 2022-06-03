@@ -13,32 +13,35 @@ from utils import load_pickle, save_pickle, load_json, files_exist
 import sys; sys.path.append('/work/awilf/utils/'); from alex_utils import rmrf,mkdirp
 
 from torch_geometric.data import HeteroData
-_opt = None
+gc = None
+
+from common import *
 
 def tolong(x):
     return torch.Tensor(x).to(torch.long)
     
 class TVQADataset(Dataset):
-    def __init__(self, opt, mode="train"):
-        global _opt; _opt=opt
-        self.raw_train = load_json(opt.train_path)
-        self.raw_test = load_json(opt.test_path)
-        self.raw_valid = load_json(opt.valid_path)
-        self.vcpt_dict = load_pickle(opt.vcpt_path)
-        self.vfeat_load = opt.vid_feat_flag
+    def __init__(self, _gc, mode="train"):
+        global gc; gc=_gc
+
+        self.raw_train = load_json(gc['train_path'])
+        self.raw_test = load_json(gc['test_path'])
+        self.raw_valid = load_json(gc['valid_path'])
+        self.vcpt_dict = load_pickle(gc['vcpt_path'])
+        self.vfeat_load = gc['vid_feat_flag']
         if self.vfeat_load:
-            self.vid_h5 = h5py.File(opt.vid_feat_path, "r", driver=opt.h5driver)
-        self.glove_embedding_path = opt.glove_path
-        self.normalize_v = opt.normalize_v
-        self.with_ts = opt.with_ts
+            self.vid_h5 = h5py.File(gc['vid_feat_path'], "r", driver=gc['h5driver'])
+        self.glove_embedding_path = gc['glove_path']
+        self.normalize_v = gc['normalize_v']
+        self.with_ts = gc['with_ts']
         self.mode = mode
         self.cur_data_dict = self.get_cur_dict()
 
         # set word embedding / vocabulary
-        self.word2idx_path = opt.word2idx_path
-        self.idx2word_path = opt.idx2word_path
-        self.vocab_embedding_path = opt.vocab_embedding_path
-        self.embedding_dim = opt.embedding_size
+        self.word2idx_path = gc['word2idx_path']
+        self.idx2word_path = gc['idx2word_path']
+        self.vocab_embedding_path = gc['vocab_embedding_path']
+        self.embedding_dim = gc['embedding_size']
         self.word2idx = {"<pad>": 0, "<unk>": 1, "<eos>": 2}
         self.idx2word = {0: "<pad>", 1: "<unk>", 2: "<eos>"}
         self.offset = len(self.word2idx)
@@ -61,7 +64,7 @@ class TVQADataset(Dataset):
         # build/load vocabulary
         if not files_exist([self.word2idx_path, self.idx2word_path, self.vocab_embedding_path]):
             print("\nNo cache founded.")
-            self.build_word_vocabulary(word_count_threshold=opt.word_count_threshold)
+            self.build_word_vocabulary(word_count_threshold=gc['word_count_threshold'])
         else:
             print("\nLoading cache ...")
             self.word2idx = load_pickle(self.word2idx_path)
@@ -136,23 +139,27 @@ class TVQADataset(Dataset):
         # format label key
         # d['label_key'] = tolong(d['label_key']['x'])
 
+        graph_keys = ['sub', 'q', 'a0', 'a1', 'a2', 'a3', 'a4']
+
         if self.vfeat_load:
             # pad and clip vid feats
-            arr = d['vid']['x']
-            d['vid_l'] = tolong([min(arr.shape[0], _opt.max_vid_l)])
-            arr = arr[:_opt.max_vid_l,:]
-            arr = torch.nn.functional.pad(arr, (0,0,0,_opt.max_vid_l-arr.shape[0]))
-            d['vid'] = {'x': arr}
+            k = 'vid'
+            arr = d[k]['x']
+            d[f'{k}_l'] = tolong([min(arr.shape[0], gc['max_vid_l'])])
+            arr = arr[:gc['max_vid_l'],:]
+            if k not in graph_keys: # pad
+                arr = torch.nn.functional.pad(arr, (0,0,0,gc['max_vid_l']-arr.shape[0]))
+            d[k] = {'x': arr}
         else:
             del d['vid']
         
         # get full text embeddings
-        q_max = _opt.max_q_l
+        q_max = gc['max_q_l']
         text_keys = ["q", "a0", "a1", "a2", "a3", "a4", "sub", "vcpt"]
         max_pad = {
             "q": q_max, "a0": q_max, "a1": q_max, "a2": q_max, "a3": q_max, "a4": q_max,
-            "sub": _opt.max_sub_l,
-            "vcpt": _opt.max_vcpt_l
+            "sub": gc['max_sub_l'],
+            "vcpt": gc['max_vcpt_l']
         }
 
         with torch.no_grad():
@@ -162,8 +169,59 @@ class TVQADataset(Dataset):
                 
                 # pad and clip
                 arr = arr[:max_pad[k],:]
-                arr = torch.nn.functional.pad(arr,(0,0,0,max_pad[k]-arr.shape[0]))
+                if k not in graph_keys: # pad
+                    arr = torch.nn.functional.pad(arr,(0,0,0,max_pad[k]-arr.shape[0]))
                 d[k]['x'] = arr
+
+        idxs = {
+            k: torch.arange(d[k]['x'].shape[0]) for k in graph_keys
+        }
+        d = {
+            **d,
+            
+            # self conns
+            ('q', 'q_q', 'q'): get_fc_edges(idxs['q'], idxs['q']),
+            ('sub', 'sub_sub', 'sub'): get_fc_edges(idxs['sub'], idxs['sub']),
+            ('a0', 'a_a', 'a0'): get_fc_edges(idxs['a0'], idxs['a0']),
+            ('a1', 'a_a', 'a1'): get_fc_edges(idxs['a1'], idxs['a1']),
+            ('a2', 'a_a', 'a2'): get_fc_edges(idxs['a2'], idxs['a2']),
+            ('a3', 'a_a', 'a3'): get_fc_edges(idxs['a3'], idxs['a3']),
+            ('a4', 'a_a', 'a4'): get_fc_edges(idxs['a4'], idxs['a4']),
+
+            # sub
+            ('sub', 'sub_q', 'q'): get_fc_edges(idxs['sub'], idxs['q']),
+            ('q', 'q_sub', 'sub'): get_fc_edges(idxs['q'], idxs['sub']),
+            
+            ('sub', 'sub_a', 'a0'): get_fc_edges(idxs['sub'], idxs['a0']),
+            ('sub', 'sub_a', 'a1'): get_fc_edges(idxs['sub'], idxs['a1']),
+            ('sub', 'sub_a', 'a2'): get_fc_edges(idxs['sub'], idxs['a2']),
+            ('sub', 'sub_a', 'a3'): get_fc_edges(idxs['sub'], idxs['a3']),
+            ('sub', 'sub_a', 'a4'): get_fc_edges(idxs['sub'], idxs['a4']),
+
+            ('a0', 'a_sub', 'sub'): get_fc_edges(idxs['a0'], idxs['sub']),
+            ('a1', 'a_sub', 'sub'): get_fc_edges(idxs['a1'], idxs['sub']),
+            ('a2', 'a_sub', 'sub'): get_fc_edges(idxs['a2'], idxs['sub']),
+            ('a3', 'a_sub', 'sub'): get_fc_edges(idxs['a3'], idxs['sub']),
+            ('a4', 'a_sub', 'sub'): get_fc_edges(idxs['a4'], idxs['sub']),
+
+            # qa
+            ('q', 'q_a', 'a0'): get_fc_edges(idxs['q'], idxs['a0']),
+            ('q', 'q_a', 'a1'): get_fc_edges(idxs['q'], idxs['a1']),
+            ('q', 'q_a', 'a2'): get_fc_edges(idxs['q'], idxs['a2']),
+            ('q', 'q_a', 'a3'): get_fc_edges(idxs['q'], idxs['a3']),
+            ('q', 'q_a', 'a4'): get_fc_edges(idxs['q'], idxs['a4']),
+
+            ('a0', 'a_q','q'): get_fc_edges(idxs['a0'], idxs['q']),
+            ('a1', 'a_q','q'): get_fc_edges(idxs['a1'], idxs['q']),
+            ('a2', 'a_q','q'): get_fc_edges(idxs['a2'], idxs['q']),
+            ('a3', 'a_q','q'): get_fc_edges(idxs['a3'], idxs['q']),
+            ('a4', 'a_q','q'): get_fc_edges(idxs['a4'], idxs['q']),
+        }
+
+        d = {
+            **d,
+            **{k: {'edge_index': v} for k,v in d.items() if isinstance(k, tuple) },
+        }
 
         d = HeteroData(d)
         return d, label
@@ -351,6 +409,6 @@ if __name__ == "__main__":
     data_loader = DataLoader(dset, batch_size=10, shuffle=False, collate_fn=pad_collate)
 
     for batch_idx, batch in enumerate(data_loader):
-        model_inputs, targets, qids = preprocess_inputs(batch, opt.max_sub_l, opt.max_vcpt_l, opt.max_vid_l)
+        model_inputs, targets, qids = preprocess_inputs(batch, gc['max_sub_l'], gc['max_vcpt_l'], gc['max_vid_l'])
         break
 

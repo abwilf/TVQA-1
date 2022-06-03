@@ -16,10 +16,11 @@ class BaseOptions(object):
     def initialize(self):
         self.parser.add_argument("--debug", action="store_true", help="debug mode, break all loops")
         self.parser.add_argument("--results_dir_base", type=str, default="results/results")
-        self.parser.add_argument("--log_freq", type=int, default=400, help="print, save training info")
+        self.parser.add_argument("--log_freq", type=int, default=4000, help="print, save training info")
         self.parser.add_argument("--lr", type=float, default=3e-4, help="learning rate")
+        self.parser.add_argument("--graph_lr", type=float, default=1e-06, help="learning rate")
         self.parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
-        self.parser.add_argument("--n_epoch", type=int, default=100, help="number of epochs to run")
+        self.parser.add_argument("--n_epoch", type=int, default=15, help="number of epochs to run")
         self.parser.add_argument("--max_es_cnt", type=int, default=3, help="number of epochs to early stop")
         self.parser.add_argument("--bsz", type=int, default=32, help="mini-batch size")
         self.parser.add_argument("--test_bsz", type=int, default=100, help="mini-batch size for testing")
@@ -45,6 +46,12 @@ class BaseOptions(object):
         self.parser.add_argument("--vocab_size", type=int, default=0, help="vocabulary size")
         self.parser.add_argument("--no_normalize_v", action="store_true", help="do not normalize video featrue")
         self.parser.add_argument("--num_workers", type=int, default=8)
+        self.parser.add_argument("--pad", type=int, default=1)
+        self.parser.add_argument("--hidden_dim", type=int, default=256)
+        self.parser.add_argument("--num_heads", type=int, default=4)
+        self.parser.add_argument("--batch_norm", type=int, default=1)
+        self.parser.add_argument("--num_convs", type=int, default=4)
+        self.parser.add_argument("--drop_het", type=float, default=0)
 
         # path config
         self.parser.add_argument("--train_path", type=str, default="./data/tvqa_train_processed.json",

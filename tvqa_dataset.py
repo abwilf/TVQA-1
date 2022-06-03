@@ -243,6 +243,7 @@ def pad_collate(data):
     vid_feat_key = "vid"
     all_keys = text_keys + [label_key, qid_key, vid_name_key, vid_feat_key]
     all_values = []
+    column_data = list(column_data)
     for i, k in enumerate(all_keys):
         if k in text_keys:
             all_values.append(pad_sequences(column_data[i]))
@@ -288,6 +289,10 @@ if __name__ == "__main__":
     from config import BaseOptions
     sys.argv[1:] = ["--input_streams", "sub"]
     opt = BaseOptions().parse()
+
+    import sys; sys.path.append('/work/awilf/utils/'); from alex_utils import *
+    rmrf('./cache')
+    mkdirp('./cache')
 
     dset = TVQADataset(opt, mode="valid")
     data_loader = DataLoader(dset, batch_size=10, shuffle=False, collate_fn=pad_collate)
