@@ -1,0 +1,29 @@
+program: /work/awilf/emtvqa/main_graph.py
+method: grid
+metric:
+  goal: minimize
+  name: train_loss
+parameters:
+  sweep:
+    value: 1
+  num_batches:
+    value: 1000
+  input_streams:
+    value: sub
+  n_epoch:
+    value: 100000
+  bs:
+    values:
+    - 10
+  num_convs:
+    values:
+    - 4
+    - 8
+  hidden_dim:
+    values:
+    - 64
+  graph_lr:
+    values:
+    - .000001
+    - .00001
+    - .0001

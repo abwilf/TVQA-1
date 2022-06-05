@@ -20,6 +20,7 @@ import itertools
 from config import BaseOptions
 
 torch.cuda.set_device(0)
+import wandb
 
 def train(opt, dset, model, criterion, main_optimizer, graph_optimizer, epoch, previous_best_acc, train_loader, scheduler):
     dset.set_mode("train")
@@ -44,12 +45,13 @@ def train(opt, dset, model, criterion, main_optimizer, graph_optimizer, epoch, p
     #     'loss': np.random.random(10),
     # }
     # return results
-    
+    # wandb.watch(model, criterion, log="all")
+
     for batch_idx, (x,targets) in tqdm(enumerate(train_loader), total=len(train_loader)):
         # model_inputs, targets, _ = preprocess_inputs(batch, gc['max_sub_l'], gc['max_vcpt_l'], gc['max_vid_l'], device=gc['device'])
         
         # TODO: change model_inputs to be a graph here!
-        # forward(self, q, q_l, a0, a0_l, a1, a1_l, a2, a2_l, a3, a3_l, a4, a4_l, sub, sub_l, vcpt, vcpt_l, vid, vid_l):
+        # forward(self, q, q_l, a0, a0_l, a1, a1_l, a2, a2_l, a3, a3_l, a4, a4_l, sub, sub_l, vcpt, vcpt_l, vid, vid_l)
         
         x = x.cuda()
         targets = targets.cuda()
@@ -92,13 +94,13 @@ def train(opt, dset, model, criterion, main_optimizer, graph_optimizer, epoch, p
             continue
         
         loss = criterion(outputs, targets)
-        main_optimizer.zero_grad()
+        # main_optimizer.zero_grad()
         graph_optimizer.zero_grad()
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), gc['clip'])
         
-        main_optimizer.step()
+        # main_optimizer.step()
         graph_optimizer.step()
         scheduler.step()
 
@@ -106,50 +108,62 @@ def train(opt, dset, model, criterion, main_optimizer, graph_optimizer, epoch, p
         train_loss.append(loss.item())
         pred_ids = outputs.data.max(1)[1]
         train_corrects += pred_ids.eq(targets.data).cpu().numpy().tolist()
-        if batch_idx % gc['log_freq'] == 0 and batch_idx != 0:
+        train_acc = sum(train_corrects) / float(len(train_corrects))
+        train_loss = sum(train_loss) / float(len(train_corrects))
+
+        if gc['train_steps'] % gc['log_freq'] == 0:
             niter = epoch * len(train_loader) + batch_idx
 
-            train_acc = sum(train_corrects) / float(len(train_corrects))
-            train_loss = sum(train_loss) / float(len(train_corrects))
             # gc['writer'].add_scalar("Train/Acc", train_acc, niter)
             # gc['writer'].add_scalar("Train/Loss", train_loss, niter)
 
             # Test
-            valid_acc, valid_loss = validate(gc, dset, model, mode="valid")
-            # gc['writer'].add_scalar("Valid/Loss", valid_loss, niter)
+            # if not gc['debug']:
+            #     valid_acc, valid_loss = validate(gc, dset, model, mode="valid")
+            #     # gc['writer'].add_scalar("Valid/Loss", valid_loss, niter)
 
-            valid_log_str = "%02d\t%.4f" % (batch_idx, valid_acc)
-            valid_acc_log.append(valid_log_str)
-            if valid_acc > previous_best_acc:
-                previous_best_acc = valid_acc
-                torch.save(model.state_dict(), os.path.join(gc['results_dir'], "best_valid.pth"))
-            print(" Train Epoch %d loss %.4f acc %.4f Val loss %.4f acc %.4f"
-                  % (epoch, train_loss, train_acc, valid_loss, valid_acc))
+            #     valid_log_str = "%02d\t%.4f" % (batch_idx, valid_acc)
+            #     valid_acc_log.append(valid_log_str)
+            #     if valid_acc > previous_best_acc:
+            #         previous_best_acc = valid_acc
+            #         torch.save(model.state_dict(), os.path.join(gc['results_dir'], "best_valid.pth"))
+            #     print(" Train Epoch %d loss %.4f acc %.4f Val loss %.4f acc %.4f" % (epoch, train_loss, train_acc, valid_loss, valid_acc))
+            #     wandb.log({'train_loss': train_loss, 'train_acc': train_acc})
 
+            # else:
+            print(" Train Epoch %d loss %.4f acc %.4f" % (epoch, train_loss, train_acc))
+            wandb.log({'train_loss': train_loss, 'train_acc': train_acc})
+            if train_loss < .1:
+                exit()
             # reset to train
             torch.set_grad_enabled(True)
             model.train()
             dset.set_mode("train")
-            train_corrects = []
-            train_loss = []
 
         # torch.cuda.empty_cache()
-
-        if gc['debug']:
+        train_corrects = []
+        train_loss = []
+        # if gc['debug']:
+        #     break
+        # if batch_idx > 3000:
+        #     break
+        gc['train_steps'] += 1
+        if batch_idx >= gc['num_batches']-1 and gc['num_batches'] > 0:
             break
 
     # additional log
     with open(os.path.join(gc['results_dir'], "valid_acc.log"), "a") as f:
         f.write("\n".join(valid_acc_log) + "\n")
 
-    return previous_best_acc
+    # valid_acc, valid_loss = validate(gc, dset, model, mode="valid")
+    return train_acc, 0
 
 
 def validate(gc, dset, model, mode="valid"):
     dset.set_mode(mode)
     torch.set_grad_enabled(False)
     model.eval()
-    valid_loader = DataLoader(dset, batch_size=gc['test_bsz'], shuffle=False, collate_fn=pad_collate)
+    valid_loader = DataLoader(dset, batch_size=gc['test_bs'], shuffle=False, collate_fn=pad_collate)
 
     valid_qids = []
     valid_loss = []
@@ -217,6 +231,14 @@ def main(_gc):
     torch.manual_seed(2018)
     # opt = BaseOptions().parse()
     global gc; gc = _gc
+
+    wandb.init(
+        project="tvqa_graphnn" if not gc['sweep'] else None, 
+        entity="socialiq" if not gc['sweep'] else None, 
+        name=gc['name'] if not (gc['name']=='' or gc['sweep']) else None,
+        config={k: v for k,v in gc.items() if k in ['bs', 'graph_lr', 'n_epoch', 'hidden_dim', '']}
+    )
+
     gc['input_streams'] = gc['input_streams'].split(' ')
     # writer = SummaryWriter(gc['results_dir'])
     # gc['writer'] = writer
@@ -237,15 +259,17 @@ def main(_gc):
 
     model.cuda()
     cudnn.benchmark = True
+    global criterion
     criterion = nn.CrossEntropyLoss(size_average=False).cuda()
 
-    graph_optimizer = torch.optim.AdamW(model.hetero_gnn.parameters(),lr=gc['graph_lr'])
-    
-    other_params = list(map(lambda elt: elt[1], filter(lambda np: ('hetero_gnn' not in np[0]) and np[1].requires_grad, model.named_parameters())))
-    main_optimizer = torch.optim.Adam(other_params, lr=gc['lr'], weight_decay=gc['wd'])
+    # graph_optimizer = torch.optim.AdamW(model.hetero_gnn.parameters(),lr=gc['graph_lr'])
+    graph_optimizer = torch.optim.AdamW(model.parameters(),lr=gc['graph_lr'])
+    # other_params = list(map(lambda elt: elt[1], filter(lambda np: ('hetero_gnn' not in np[0]) and np[1].requires_grad, model.named_parameters())))
+    # main_optimizer = torch.optim.Adam(other_params, lr=gc['lr'], weight_decay=gc['wd'])
+    main_optimizer = None
 
     dset.set_mode("train")
-    train_loader = DataLoader(dset, batch_size=gc['bsz'], shuffle=False, num_workers=gc['num_workers'])
+    train_loader = DataLoader(dset, batch_size=gc['bs'], shuffle=False, num_workers=gc['num_workers'])
     scheduler = torch.optim.lr_scheduler.OneCycleLR(graph_optimizer, pct_start=0.05, anneal_strategy='linear', final_div_factor=10, max_lr=5e-4, total_steps=len(train_loader) * gc['n_epoch'] + 1)
 
     # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, pct_start=0.05, 
@@ -263,11 +287,21 @@ def main(_gc):
     best_acc = 0.
     early_stopping_cnt = 0
     early_stopping_flag = False
+    results = {
+        'train_accs': [],
+        'valid_accs': []
+    }
+    gc['train_steps'] = 0
     for epoch in range(gc['n_epoch']):
-        if not early_stopping_flag:
+        train_acc, valid_acc = train(gc, dset, model, criterion, main_optimizer, graph_optimizer, epoch, best_acc, train_loader, scheduler)
+        continue
+
+        if not early_stopping_flag or gc['debug']:
             # train for one epoch, valid per n batches, save the log and the best model
-            results = train(gc, dset, model, criterion, main_optimizer, graph_optimizer, epoch, best_acc, train_loader, scheduler)
-            cur_acc = results['acc']
+            train_acc, valid_acc = train(gc, dset, model, criterion, main_optimizer, graph_optimizer, epoch, best_acc, train_loader, scheduler)
+            results['train_accs'].append(train_acc)
+            results['valid_accs'].append(valid_acc)
+            cur_acc = valid_acc
 
             # remember best acc
             is_best = cur_acc > best_acc
@@ -282,12 +316,9 @@ def main(_gc):
             # gc['writer'].close()
             break  # early stop break
 
-        if gc['debug']:
-            break
-    
-    results = {
-        'accs': 
-    }
+        # if gc['debug']:
+        #     break
+    return results
     
 
 if __name__ == '__main__':

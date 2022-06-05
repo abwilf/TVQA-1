@@ -22,8 +22,8 @@ class BaseOptions(object):
         self.parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
         self.parser.add_argument("--n_epoch", type=int, default=15, help="number of epochs to run")
         self.parser.add_argument("--max_es_cnt", type=int, default=3, help="number of epochs to early stop")
-        self.parser.add_argument("--bsz", type=int, default=32, help="mini-batch size")
-        self.parser.add_argument("--test_bsz", type=int, default=100, help="mini-batch size for testing")
+        self.parser.add_argument("--bs", type=int, default=32, help="mini-batch size")
+        self.parser.add_argument("--test_bs", type=int, default=100, help="mini-batch size for testing")
         self.parser.add_argument("--clip", type=float, default=1.0, help="Gradient clipping value")
         self.parser.add_argument("--device", type=int, default=0, help="gpu ordinal, -1 indicates cpu")
         self.parser.add_argument("--no_core_driver", action="store_true",

@@ -102,8 +102,8 @@ class ABC(nn.Module):
         self.vid_flag = "imagenet" in gc['input_streams']
         self.sub_flag = "sub" in gc['input_streams']
         self.vcpt_flag = "vcpt" in gc['input_streams']
-        hidden_size_1 = gc['hsz1']
-        hidden_size_2 = gc['hsz2']
+        hidden_size_1 = gc['hidden_dim']
+        hidden_size_2 = gc['hidden_dim']
         n_layers_cls = gc['n_layers_cls']
         vid_feat_size = gc['vid_feat_size']
         embedding_size = gc['embedding_size']
@@ -136,22 +136,17 @@ class ABC(nn.Module):
                                                dropout_p=0, n_layers=1, rnn_type="lstm")
             self.classifier_vcpt = MLP(hidden_size_2*2, 1, 500, n_layers_cls)
 
-        # self.lin_dict = torch.nn.ModuleDict()
-        # self.lin_dict['sub'] = nn.Sequential(
-        #     nn.Linear(300, gc['hidden_dim']),
-        #     nn.Dropout(.1),
-        #     nn.ReLU(),
-        # )
-        # self.lin_dict['a'] = nn.Sequential(
-        #     nn.Linear(300, gc['hidden_dim']),
-        #     nn.Dropout(.1),
-        #     nn.ReLU(),
-        # )
-        # self.lin_dict['q'] = nn.Sequential(
-        #     nn.Linear(300, gc['hidden_dim']),
-        #     nn.Dropout(.1),
-        #     nn.ReLU(),
-        # )
+        def get_lin():
+            return nn.Sequential(
+                nn.Linear(300, gc['hidden_dim']),
+                nn.Dropout(.1),
+                nn.ReLU(),
+            )
+
+        self.lin_dict = torch.nn.ModuleDict()
+        self.lin_dict['q'] = get_lin()
+        self.lin_dict['a'] = get_lin()
+        self.lin_dict['sub'] = get_lin()
 
         self.hetero_gnn = Solograph_HeteroGNN()
         self.pe = PositionalEncoding(gc['hidden_dim'])
@@ -190,11 +185,10 @@ class ABC(nn.Module):
 
         if self.sub_flag:
             # run lin projection
-            # batch['sub']['x'] = self.lin_dict['sub'](batch['sub']['x'])
-            # batch['q']['x'] = self.lin_dict['q'](batch['q']['x'])
-            
-            # for a in ['a0', 'a1', 'a2', 'a3', 'a4']:
-            #     batch[a]['x'] = self.lin_dict['a'](batch[a]['x'])
+            batch['sub']['x'] = self.lin_dict['sub'](batch['sub']['x'])
+            batch['q']['x'] = self.lin_dict['q'](batch['q']['x'])
+            for a in ['a0', 'a1', 'a2', 'a3', 'a4']:
+                batch[a]['x'] = self.lin_dict['a'](batch[a]['x'])
 
             # positional encoding
             for k in ['sub', 'q', 'a0', 'a1', 'a2', 'a3', 'a4']:
@@ -287,19 +281,19 @@ class ABC(nn.Module):
 
     @staticmethod
     def get_fake_inputs(device="cuda:0"):
-        bsz = 16
-        q = torch.ones(bsz, 25).long().to(device)
-        q_l = torch.ones(bsz).fill_(25).long().to(device)
-        a = torch.ones(bsz, 5, 20).long().to(device)
-        a_l = torch.ones(bsz, 5).fill_(20).long().to(device)
+        bs = 16
+        q = torch.ones(bs, 25).long().to(device)
+        q_l = torch.ones(bs).fill_(25).long().to(device)
+        a = torch.ones(bs, 5, 20).long().to(device)
+        a_l = torch.ones(bs, 5).fill_(20).long().to(device)
         a0, a1, a2, a3, a4 = [a[:, i, :] for i in range(5)]
         a0_l, a1_l, a2_l, a3_l, a4_l = [a_l[:, i] for i in range(5)]
-        sub = torch.ones(bsz, 300).long().to(device)
-        sub_l = torch.ones(bsz).fill_(300).long().to(device)
-        vcpt = torch.ones(bsz, 300).long().to(device)
-        vcpt_l = torch.ones(bsz).fill_(300).long().to(device)
-        vid = torch.ones(bsz, 100, 2048).to(device)
-        vid_l = torch.ones(bsz).fill_(100).long().to(device)
+        sub = torch.ones(bs, 300).long().to(device)
+        sub_l = torch.ones(bs).fill_(300).long().to(device)
+        vcpt = torch.ones(bs, 300).long().to(device)
+        vcpt_l = torch.ones(bs).fill_(300).long().to(device)
+        vid = torch.ones(bs, 100, 2048).to(device)
+        vid_l = torch.ones(bs).fill_(100).long().to(device)
         return q, q_l, a0, a0_l, a1, a1_l, a2, a2_l, a3, a3_l, a4, a4_l, sub, sub_l, vcpt, vcpt_l, vid, vid_l
 
 

@@ -19,7 +19,10 @@ from common import *
 
 def tolong(x):
     return torch.Tensor(x).to(torch.long)
-    
+
+indices = []
+import sys; sys.path.append('/work/awilf/utils/'); from alex_utils import *
+
 class TVQADataset(Dataset):
     def __init__(self, _gc, mode="train"):
         global gc; gc=_gc

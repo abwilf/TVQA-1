@@ -1,12 +1,16 @@
 import sys; sys.path.append('/work/awilf/utils/'); from alex_utils import *
 
 hp = {
-    # 'lr': [1e-3, 3e-4, 1e-5],
-    # 'graph_lr':[1e-5, 1e-06],
-    'lr': [1e-3],
+    'lr': [1e-3, 3e-4, 1e-5],
     'graph_lr':[1e-5, 1e-06],
-    'n_epoch': [1],
-    'debug': [1],
+    'n_epoch': [5],
+    'num_workers': [0],
+
+    ## testing NSG
+    # 'lr': [1e-3],
+    # 'graph_lr':[1e-5, 1e-06],
+    # 'n_epoch': [1],
+    # 'debug': [1],
 }
 
 ## Define sbatch skeleton
